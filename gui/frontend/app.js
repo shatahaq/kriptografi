@@ -85,6 +85,7 @@ function setupEventListeners() {
 
     extInput.addEventListener("input", () => {
         extInput.style.borderColor = "";
+        updateActionButtons();
     });
 }
 
@@ -197,6 +198,17 @@ async function handleEncrypt() {
         return;
     }
 
+    if (extInput.value.trim()) {
+        addLog("Encrypt is locked while the decryption extension field is filled.", "warning");
+        extInput.focus();
+        extInput.style.borderColor = "var(--warning)";
+        setTimeout(() => {
+            extInput.style.borderColor = "";
+        }, 1800);
+        updateActionButtons();
+        return;
+    }
+
     isRunning = true;
     updateActionButtons();
     addLog("Encrypt requested for build #" + currentBuildId + ".", "system");
@@ -243,8 +255,9 @@ async function handleDecrypt() {
 
 function updateActionButtons() {
     const hasBuild = !!currentBuildId;
+    const hasDecryptExt = !!extInput.value.trim();
 
-    btnEncrypt.disabled = isRunning || !hasBuild;
+    btnEncrypt.disabled = isRunning || !hasBuild || hasDecryptExt;
     btnDecrypt.disabled = isRunning || !hasBuild;
     btnBrowse.disabled = isRunning;
     btnClearTarget.disabled = isRunning || !targetFolder.value.trim();
