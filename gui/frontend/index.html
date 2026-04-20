@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RaaS</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <header id="titlebar">
+        <div class="titlebar-left">
+            <div class="titlebar-logo">
+                <svg class="logo-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+                    <path d="M7 11V7a5 5 0 0110 0v4"/>
+                </svg>
+                <span class="logo-text">RaaS</span>
+            </div>
+        </div>
+        <div class="titlebar-controls">
+            <button id="btn-minimize" class="titlebar-btn" title="Minimize" aria-label="Minimize window">
+                <svg viewBox="0 0 12 12" width="12" height="12">
+                    <line x1="2" y1="6" x2="10" y2="6" stroke="currentColor" stroke-width="1.5"/>
+                </svg>
+            </button>
+            <button id="btn-maximize" class="titlebar-btn" title="Maximize" aria-label="Maximize window">
+                <svg viewBox="0 0 12 12" width="12" height="12">
+                    <rect x="2" y="2" width="8" height="8" stroke="currentColor" stroke-width="1.2" fill="none"/>
+                </svg>
+            </button>
+            <button id="btn-close" class="titlebar-btn btn-close" title="Close" aria-label="Close window">
+                <svg viewBox="0 0 12 12" width="12" height="12">
+                    <line x1="2" y1="2" x2="10" y2="10" stroke="currentColor" stroke-width="1.5"/>
+                    <line x1="10" y1="2" x2="2" y2="10" stroke="currentColor" stroke-width="1.5"/>
+                </svg>
+            </button>
+        </div>
+    </header>
+
+    <div id="project-banner" class="banner hidden">
+        <div class="banner-content">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#ffab00" stroke-width="2">
+                <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+                <line x1="12" y1="9" x2="12" y2="13"/>
+                <line x1="12" y1="17" x2="12.01" y2="17"/>
+            </svg>
+            <span>Project directory not detected.</span>
+            <button id="btn-select-project" class="btn-link">Select Directory</button>
+        </div>
+    </div>
+
+    <main class="container">
+        <div class="top-grid">
+            <section class="card" id="generate-section">
+                <div class="card-header">
+                    <div class="card-heading">
+                        <div class="icon-shell">
+                            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8">
+                                <path d="M12 3l1.8 4.7L18.5 9l-4.7 1.3L12 15l-1.8-4.7L5.5 9l4.7-1.3L12 3z"/>
+                                <path d="M19 4l.6 1.4L21 6l-1.4.6L19 8l-.6-1.4L17 6l1.4-.6L19 4z"/>
+                            </svg>
+                        </div>
+                        <div class="card-copy">
+                            <h2>Generate</h2>
+                            <p>Create a fresh encryptor and decryptor package</p>
+                        </div>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <button id="btn-generate" class="btn-generate">
+                        <span class="btn-generate-bg"></span>
+                        <span class="btn-generate-content">
+                            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.9">
+                                <path d="M13 2L4 13h6l-1 9 9-11h-6l1-9z"/>
+                            </svg>
+                            <span>Generate New Build</span>
+                        </span>
+                        <span class="btn-loader hidden">
+                            <span class="spinner"></span>
+                            <span>Building...</span>
+                        </span>
+                    </button>
+
+                    <div id="build-status" class="status-grid hidden">
+                        <div class="status-item">
+                            <span class="status-label">ID</span>
+                            <span class="status-value" id="stat-id">-</span>
+                        </div>
+                        <div class="status-item">
+                            <span class="status-label">Encryptor</span>
+                            <span class="status-value" id="stat-enc">-</span>
+                        </div>
+                        <div class="status-item">
+                            <span class="status-label">Decryptor</span>
+                            <span class="status-value" id="stat-dec">-</span>
+                        </div>
+                        <div class="status-item">
+                            <span class="status-label">Key File</span>
+                            <span class="status-value" id="stat-key">-</span>
+                        </div>
+                        <div class="status-item full-width">
+                            <span class="status-label">Built</span>
+                            <span class="status-value" id="stat-time">-</span>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <section class="card" id="execute-section">
+                <div class="card-header">
+                    <div class="card-heading">
+                        <div class="icon-shell">
+                            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8">
+                                <path d="M5 4v16l13-8-13-8z"/>
+                                <path d="M19 6v12"/>
+                            </svg>
+                        </div>
+                        <div class="card-copy">
+                            <h2>Execute</h2>
+                            <p>Choose a build, define scope, then run the action</p>
+                        </div>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <div class="form-group">
+                        <label for="build-select">Build ID</label>
+                        <select id="build-select" class="input">
+                            <option value="">No builds available</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="target-folder">Target Folder</label>
+                        <div class="input-group">
+                            <input type="text" id="target-folder" class="input" readonly placeholder="Leave blank for ALL DRIVES (default)">
+                            <button id="btn-browse" class="btn-icon" title="Browse target folder" aria-label="Browse target folder">
+                                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8">
+                                    <path d="M3 7.5A2.5 2.5 0 015.5 5H10l2 2h6.5A2.5 2.5 0 0121 9.5v7A2.5 2.5 0 0118.5 19h-13A2.5 2.5 0 013 16.5v-9z"/>
+                                    <circle cx="16.5" cy="14.5" r="2.5"/>
+                                    <path d="M18.3 16.3L20 18"/>
+                                </svg>
+                            </button>
+                            <button id="btn-clear-target" class="btn-icon btn-icon-muted" title="Reset to ALL DRIVES" aria-label="Reset target folder">
+                                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8">
+                                    <path d="M18 6L6 18"/>
+                                    <path d="M6 6l12 12"/>
+                                </svg>
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="scope-card" id="scope-card">
+                        <div class="scope-topline">
+                            <span class="scope-label">Target Scope</span>
+                            <span class="scope-badge" id="scope-badge">ALL DRIVES</span>
+                        </div>
+                        <p id="scope-description">No folder selected. The active build will run across all available drives.</p>
+                        <span class="scope-footnote" id="scope-footnote">Used by both Encrypt and Decrypt actions.</span>
+                    </div>
+
+                    <div class="form-group" id="ext-group">
+                        <label for="ext-input">Recovery Extension <span class="label-hint">(for decrypt)</span></label>
+                        <input type="text" id="ext-input" class="input" placeholder="Example: xK2mP9">
+                    </div>
+
+                    <div class="btn-row">
+                        <button id="btn-encrypt" class="btn btn-danger" disabled>
+                            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8">
+                                <path d="M12 3l7 3v5c0 4.3-2.9 8.1-7 9-4.1-.9-7-4.7-7-9V6l7-3z"/>
+                                <rect x="8.5" y="10.5" width="7" height="5.5" rx="1.2"/>
+                                <path d="M10 10V8.8a2 2 0 014 0V10"/>
+                            </svg>
+                            Encrypt
+                        </button>
+                        <button id="btn-decrypt" class="btn btn-success" disabled>
+                            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8">
+                                <path d="M12 3l7 3v5c0 4.3-2.9 8.1-7 9-4.1-.9-7-4.7-7-9V6l7-3z"/>
+                                <rect x="8.5" y="10.5" width="7" height="5.5" rx="1.2"/>
+                                <path d="M14.5 10V8.8a2 2 0 00-3.6-1.2"/>
+                            </svg>
+                            Decrypt
+                        </button>
+                    </div>
+                </div>
+            </section>
+        </div>
+
+        <section class="card" id="log-section">
+            <div class="card-header">
+                <div class="card-heading">
+                    <div class="icon-shell">
+                        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8">
+                            <path d="M5 7l4 4-4 4"/>
+                            <path d="M11 17h8"/>
+                            <rect x="3" y="4" width="18" height="16" rx="2.5"/>
+                        </svg>
+                    </div>
+                    <div class="card-copy">
+                        <h2>Terminal</h2>
+                        <p>Live runtime output with sticky bottom scrolling</p>
+                    </div>
+                </div>
+                <div class="card-actions">
+                    <span id="terminal-count" class="meta-pill">1 entry</span>
+                    <button id="btn-clear-log" class="btn-ghost">Clear</button>
+                </div>
+            </div>
+            <div class="card-body no-padding">
+                <div id="terminal" class="terminal">
+                    <div class="terminal-line system">
+                        <span class="t-marker" aria-hidden="true"></span>
+                        <span class="t-time">[--:--:--]</span>
+                        <span class="t-msg">RaaS v1.0 - Ready</span>
+                    </div>
+                    <div class="terminal-cursor">
+                        <span class="t-marker t-marker-cursor" aria-hidden="true"></span>
+                        <span class="cursor-char">|</span>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="card" id="history-section">
+            <div class="card-header">
+                <div class="card-heading">
+                    <div class="icon-shell">
+                        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8">
+                            <path d="M12 8v4l3 2"/>
+                            <circle cx="12" cy="12" r="8.5"/>
+                            <path d="M7 3.5h10"/>
+                        </svg>
+                    </div>
+                    <div class="card-copy">
+                        <h2>Build History</h2>
+                        <p>Readable archive of generated artifacts and timestamps</p>
+                    </div>
+                </div>
+                <div class="card-actions">
+                    <span id="history-meta" class="meta-pill">0 builds</span>
+                    <button id="btn-refresh" class="btn-ghost">
+                        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8">
+                            <path d="M20 11a8 8 0 10-2.34 5.66"/>
+                            <path d="M20 4v7h-7"/>
+                        </svg>
+                        Refresh
+                    </button>
+                </div>
+            </div>
+            <div class="card-body no-padding">
+                <div id="no-builds" class="empty-state">
+                    <svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.3">
+                        <rect x="4" y="5" width="16" height="14" rx="2"/>
+                        <path d="M8 9h8"/>
+                        <path d="M8 13h5"/>
+                    </svg>
+                    <p>No builds yet</p>
+                    <span>Generate your first build to get started</span>
+                </div>
+                <div id="history-table-wrap" class="hidden">
+                    <table id="history-table">
+                        <thead>
+                            <tr>
+                                <th>Build</th>
+                                <th>Created</th>
+                                <th>Encryptor</th>
+                                <th>Decryptor</th>
+                                <th>Key</th>
+                            </tr>
+                        </thead>
+                        <tbody id="history-body"></tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <script src="app.js"></script>
+</body>
+</html>

