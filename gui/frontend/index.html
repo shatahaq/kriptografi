@@ -7,6 +7,18 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <script>
+        (() => {
+            try {
+                const savedTheme = localStorage.getItem("raas-theme");
+                if (savedTheme === "light" || savedTheme === "dark") {
+                    document.documentElement.dataset.theme = savedTheme;
+                }
+            } catch (error) {
+                document.documentElement.dataset.theme = "dark";
+            }
+        })();
+    </script>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -20,23 +32,48 @@
                 <span class="logo-text">RaaS</span>
             </div>
         </div>
-        <div class="titlebar-controls">
-            <button id="btn-minimize" class="titlebar-btn" title="Minimize" aria-label="Minimize window">
-                <svg viewBox="0 0 12 12" width="12" height="12">
-                    <line x1="2" y1="6" x2="10" y2="6" stroke="currentColor" stroke-width="1.5"/>
-                </svg>
-            </button>
-            <button id="btn-maximize" class="titlebar-btn" title="Maximize" aria-label="Maximize window">
-                <svg viewBox="0 0 12 12" width="12" height="12">
-                    <rect x="2" y="2" width="8" height="8" stroke="currentColor" stroke-width="1.2" fill="none"/>
-                </svg>
-            </button>
-            <button id="btn-close" class="titlebar-btn btn-close" title="Close" aria-label="Close window">
-                <svg viewBox="0 0 12 12" width="12" height="12">
-                    <line x1="2" y1="2" x2="10" y2="10" stroke="currentColor" stroke-width="1.5"/>
-                    <line x1="10" y1="2" x2="2" y2="10" stroke="currentColor" stroke-width="1.5"/>
-                </svg>
-            </button>
+        <div class="titlebar-right">
+            <div class="theme-toggle" role="group" aria-label="Choose application theme">
+                <button id="theme-dark" class="theme-option" type="button" data-theme-value="dark" title="Use dark theme" aria-label="Use dark theme">
+                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.9">
+                        <path d="M20 14.5A7.5 7.5 0 119.5 4 6 6 0 0020 14.5z"/>
+                    </svg>
+                    <span>Dark</span>
+                </button>
+                <button id="theme-light" class="theme-option" type="button" data-theme-value="light" title="Use light theme" aria-label="Use light theme">
+                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.9">
+                        <circle cx="12" cy="12" r="4"/>
+                        <path d="M12 2.5v2.2"/>
+                        <path d="M12 19.3v2.2"/>
+                        <path d="M4.9 4.9l1.6 1.6"/>
+                        <path d="M17.5 17.5l1.6 1.6"/>
+                        <path d="M2.5 12h2.2"/>
+                        <path d="M19.3 12h2.2"/>
+                        <path d="M4.9 19.1l1.6-1.6"/>
+                        <path d="M17.5 6.5l1.6-1.6"/>
+                    </svg>
+                    <span>Light</span>
+                </button>
+            </div>
+
+            <div class="titlebar-controls">
+                <button id="btn-minimize" class="titlebar-btn" title="Minimize" aria-label="Minimize window">
+                    <svg viewBox="0 0 12 12" width="12" height="12">
+                        <line x1="2" y1="6" x2="10" y2="6" stroke="currentColor" stroke-width="1.5"/>
+                    </svg>
+                </button>
+                <button id="btn-maximize" class="titlebar-btn" title="Maximize" aria-label="Maximize window">
+                    <svg viewBox="0 0 12 12" width="12" height="12">
+                        <rect x="2" y="2" width="8" height="8" stroke="currentColor" stroke-width="1.2" fill="none"/>
+                    </svg>
+                </button>
+                <button id="btn-close" class="titlebar-btn btn-close" title="Close" aria-label="Close window">
+                    <svg viewBox="0 0 12 12" width="12" height="12">
+                        <line x1="2" y1="2" x2="10" y2="10" stroke="currentColor" stroke-width="1.5"/>
+                        <line x1="10" y1="2" x2="2" y2="10" stroke="currentColor" stroke-width="1.5"/>
+                    </svg>
+                </button>
+            </div>
         </div>
     </header>
 

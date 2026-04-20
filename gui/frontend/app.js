@@ -2,6 +2,8 @@ let currentBuildId = "";
 let isGenerating = false;
 let isRunning = false;
 let buildsCache = [];
+const THEME_STORAGE_KEY = "raas-theme";
+const DEFAULT_THEME = "dark";
 
 const $ = (id) => document.getElementById(id);
 
@@ -27,8 +29,10 @@ const scopeDescription = $("scope-description");
 const scopeFootnote = $("scope-footnote");
 const terminalCount = $("terminal-count");
 const historyMeta = $("history-meta");
+const themeButtons = Array.from(document.querySelectorAll(".theme-option"));
 
 document.addEventListener("DOMContentLoaded", async () => {
+    applyTheme(resolveInitialTheme(), { persist: false });
     setupEventListeners();
     updateTerminalMeta();
     updateTargetScope();
@@ -60,6 +64,11 @@ function setupEventListeners() {
     $("btn-minimize").addEventListener("click", () => window.runtime?.WindowMinimise?.());
     $("btn-maximize").addEventListener("click", () => window.runtime?.WindowToggleMaximise?.());
     $("btn-close").addEventListener("click", () => window.runtime?.Quit?.());
+    themeButtons.forEach((button) => {
+        button.addEventListener("click", () => {
+            applyTheme(button.dataset.themeValue || DEFAULT_THEME);
+        });
+    });
 
     $("btn-select-project").addEventListener("click", selectProjectDir);
     btnGenerate.addEventListener("click", handleGenerate);
@@ -389,6 +398,37 @@ function updateTargetScope() {
 
 function updateHistoryMeta(total) {
     historyMeta.textContent = total === 1 ? "1 build" : total + " builds";
+}
+
+function resolveInitialTheme() {
+    const theme = document.documentElement.dataset.theme;
+    return theme === "light" || theme === "dark" ? theme : DEFAULT_THEME;
+}
+
+function applyTheme(theme, options = {}) {
+    const { persist = true } = options;
+    const nextTheme = theme === "light" ? "light" : DEFAULT_THEME;
+
+    document.documentElement.dataset.theme = nextTheme;
+    syncThemeButtons(nextTheme);
+
+    if (!persist) {
+        return;
+    }
+
+    try {
+        localStorage.setItem(THEME_STORAGE_KEY, nextTheme);
+    } catch (error) {
+        // Persistence is optional; ignore storage errors silently.
+    }
+}
+
+function syncThemeButtons(theme) {
+    themeButtons.forEach((button) => {
+        const active = button.dataset.themeValue === theme;
+        button.classList.toggle("is-active", active);
+        button.setAttribute("aria-pressed", String(active));
+    });
 }
 
 function addLog(message, type = "info", timeString = "") {
